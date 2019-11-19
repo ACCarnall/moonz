@@ -1,0 +1,12 @@
+name: moonz
+
+dependencies:
+    - python=2.7
+    - astropy=2.0.5
+    - numpy
+    - pip:
+      - deepdish
+      - pandas
+      - sphinx_navtree
+      - bagpipes
+      - spectres
