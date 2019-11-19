@@ -17,3 +17,10 @@ API documentation: batch_fit
 
 .. autoclass:: moonz.batch_fit
     :members:
+
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   index.rst
