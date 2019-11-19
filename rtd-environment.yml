@@ -8,5 +8,5 @@ dependencies:
       - deepdish
       - pandas
       - sphinx_navtree
-      - bagpipes
       - spectres
+      - sklearn

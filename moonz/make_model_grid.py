@@ -1,7 +1,6 @@
 from __future__ import print_function, division, absolute_import
 
 import numpy as np
-import bagpipes as pipes
 import os
 
 from astropy.io import fits
@@ -10,6 +9,8 @@ path = os.path.dirname(os.path.realpath(__file__))
 
 
 def make_model_grid(n_train=100000, max_redshift=5.5):
+
+    import bagpipes as pipes
 
     dblplaw = {}
     dblplaw["massformed"] = 1.
