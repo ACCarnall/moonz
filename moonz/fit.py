@@ -4,10 +4,12 @@ import numpy as np
 import pandas as pd
 import os
 import deepdish as dd
+import time
 
 from sklearn.decomposition import PCA
 from astropy.io import fits
 from spectres import spectres
+from numpy.polynomial.chebyshev import chebval, chebfit
 
 from .make_model_grid import make_model_grid
 
@@ -21,7 +23,7 @@ except ImportError:
     rank = 0
     size = 1
 
-path = os.path.dirname(os.path.realpath(__file__))
+path = os.getcwd()#os.path.dirname(os.path.realpath(__file__))
 
 
 def mpi_split_array(array):
@@ -96,20 +98,23 @@ def mpi_combine_array(core_array, total_len):
 
 class batch_fit:
 
-    def __init__(self, IDs, spec_wavs, spec_cube, err_cube, n_components=20,
-                 n_train=10000, max_redshift=5., redshift_interval=0.01,
-                 run="_", save_correct=False, z_input=None):
+    def __init__(self, IDs, spec_wavs, spec_cube, err_cube, h_mag,
+                 n_components=20, n_train=10000, max_redshift=5.,
+                 redshift_interval=0.01, run="_", save_correct=False,
+                 z_input=None, h_mag_poly_lim=23):
 
         self.IDs = IDs
         self.spec_wavs = spec_wavs
         self.spec_cube = spec_cube
         self.err_cube = err_cube
+        self.h_mag = h_mag
         self.max_redshift = max_redshift
         self.redshift_interval = redshift_interval
         self.n_components = n_components
         self.run = run
         self.save_correct = save_correct
         self.z_input = z_input
+        self.h_mag_poly_lim = h_mag_poly_lim
 
         # Find no of redshift grid points at which models will be fitted
         self.n_grid = int(max_redshift/redshift_interval)+1
@@ -118,7 +123,7 @@ class batch_fit:
         if not os.path.exists(path + "/model_grid.fits"):
             print("Making model grid, this will take ~10-20 minutes the"
                    + " first time you run the code...")
-            make_model_grid()
+            make_model_grid(n_train=n_train)
 
         data_file = fits.open(path + "/model_grid.fits")
 
@@ -126,6 +131,28 @@ class batch_fit:
 
         # Load wavelengths for model grid
         self.pc_wavs = data_file[2].data
+
+    def polynomial(self, y_model, y, y_err):
+
+        slice_order = 5
+        n_slices = 3
+
+        sect_boundaries = [0., 9340., 14000., 18250.]
+
+        poly = np.zeros_like(self.spec_wavs)
+
+        for i in range(n_slices):
+            mask = (self.spec_wavs >= sect_boundaries[i]) & (self.spec_wavs < sect_boundaries[i+1])
+
+            ratio = y_model[mask]/y[mask]
+            errs = np.abs(y_err[mask]*y_model[mask]/y[mask]**2)
+
+            coefs = chebfit(self.spec_wavs[mask], ratio, slice_order, w=1./errs)
+            model = chebval(self.spec_wavs[mask], coefs)
+
+            poly[mask] = model
+
+        return poly
 
     def fit(self):
 
@@ -138,9 +165,11 @@ class batch_fit:
                                    core_zvals.shape[0]))
 
         for i in range(core_zvals.shape[0]):
-
+            time0 = time.time()
             z = core_zvals[i]  # Redshift at which to fit
-            print("Fitting z =", z)
+            os.system("echo Fitting z = " + str(np.round(z, 5)) + " "
+                      + str(i) + "/" + str(core_zvals.shape[0]))
+                      
             # Resample (redshifted) model grid to desired wavelengths
             spec_grid_res = spectres(self.spec_wavs, self.pc_wavs*(1.+z),
                                      self.spec_grid)
@@ -152,11 +181,25 @@ class batch_fit:
             # Do principal component decomposition of observed spectra
             coefs = np.dot(pca.components_, self.spec_cube.T)
 
+            self.poly_cube = np.zeros_like(self.spec_cube)
+
+            for j in range(self.spec_cube.shape[0]):
+                if self.h_mag[j] > self.h_mag_poly_lim:
+                    self.poly_cube[j, :] += 1.
+                    continue
+
+                best_model = np.sum(coefs[:, j]*pca.components_.T, axis=1)
+                self.poly_cube[j, :] = self.polynomial(best_model,
+                                                       self.spec_cube[j, :],
+                                                       self.err_cube[j, :])
+
+            coefs = np.dot(pca.components_, self.spec_cube.T*self.poly_cube.T)
+
             # Calculate chi-squared values for best PCA decomposition
             # Could be made into an array operation, not limiting step
             for j in range(self.spec_cube.shape[0]):
                 best_model = np.sum(coefs[:, j]*pca.components_.T, axis=1)
-                resid = (best_model - self.spec_cube[j, :])/self.err_cube[j, :]
+                resid = (best_model - self.spec_cube[j, :]*self.poly_cube[j, :])/self.err_cube[j, :]
                 chisq = np.sum(resid**2)
                 dof = float(self.spec_wavs.shape[0] - self.n_components)
                 core_all_chisq[j, i] = chisq/dof
@@ -168,13 +211,88 @@ class batch_fit:
 
                     np.savetxt("best_model/" + self.IDs[j] + ".txt", spec)
                 """
+
+            os.system("echo Time: " + str(np.round(time.time() - time0, 1)))
+
         all_chisq = mpi_combine_array(core_all_chisq.T, self.n_grid).T
 
         if rank == 0:
             dd.io.save("all_chisq_" + self.run + ".h5", all_chisq)
 
             best_z = np.argmin(all_chisq, axis=1)*self.redshift_interval
-            cat = pd.DataFrame(np.c_[self.IDs, best_z],
-                               columns=["#ID", "z_best"])
+            best_chisq = np.min(all_chisq, axis=1)
+
+            self.best_z = best_z
+            self.best_chisq = best_chisq
+
+            cat = pd.DataFrame(np.c_[self.IDs, best_z, best_chisq],
+                               columns=["#ID", "z_best", "chisq_min"])
 
             cat.to_csv("best_z_" + self.run + ".txt", sep="\t", index=False)
+
+    def generate_model_at_z(self, z, object_index):
+
+        os.system("echo Fitting z = " + str(np.round(z, 5)))
+        # Resample (redshifted) model grid to desired wavelengths
+        spec_grid_res = spectres(self.spec_wavs, self.pc_wavs*(1.+z),
+                                 self.spec_grid)
+
+        # Do PCA on model grid at the chosen redshift
+        pca = PCA(n_components=self.n_components)
+        pca.fit(spec_grid_res)
+
+        # Do principal component decomposition of observed spectra
+        coefs = np.dot(pca.components_, self.spec_cube.T)
+
+        self.poly_cube = np.zeros_like(self.spec_cube)
+
+        for j in range(self.spec_cube.shape[0]):
+            best_model = np.sum(coefs[:, j]*pca.components_.T, axis=1)
+            self.poly_cube[j, :] = self.polynomial(best_model,
+                                                   self.spec_cube[j, :],
+                                                   self.err_cube[j, :])
+
+        coefs = np.dot(pca.components_, self.spec_cube.T*self.poly_cube.T)
+
+        # Calculate chi-squared values for best PCA decomposition
+        # Could be made into an array operation, not limiting step
+        for j in range(object_index, object_index+1):
+            best_model = np.sum(coefs[:, j]*pca.components_.T, axis=1)
+            best_model /= self.poly_cube[j, :]
+
+        return best_model
+
+    def plot_fit(self, ID, z):
+        ind = np.argmax(self.IDs == ID)
+
+        # Resample (redshifted) model grid to desired wavelengths
+        spec_grid_res = spectres(self.spec_wavs, self.pc_wavs*(1.+z),
+                                 self.spec_grid)
+
+        # Do PCA on model grid at the chosen redshift
+        pca = PCA(n_components=self.n_components)
+        pca.fit(spec_grid_res)
+
+        # Do principal component decomposition of observed spectra
+        coefs = np.dot(pca.components_, self.spec_cube[ind, :])
+        best_model = np.sum(coefs*pca.components_.T, axis=1)
+
+        resid = (best_model - self.spec_cube[ind, :])/self.err_cube[ind, :]
+        chisq = np.sum(resid**2)
+
+        print(chisq)
+
+        import matplotlib.pyplot as plt
+
+        plt.figure()
+        ax = plt.subplot()
+        plt.plot(self.spec_wavs, self.spec_cube[ind, :])
+        plt.plot(self.spec_wavs, best_model)
+
+        plt.show()
+
+        plt.figure()
+        ax = plt.subplot()
+        plt.plot(self.spec_wavs, resid)
+
+        plt.show()

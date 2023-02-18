@@ -5,10 +5,10 @@ import os
 
 from astropy.io import fits
 
-path = os.path.dirname(os.path.realpath(__file__))
+path = os.getcwd()#os.path.dirname(os.path.realpath(__file__))
 
 
-def make_model_grid(n_train=100000, max_redshift=5.5):
+def make_model_grid(n_train=25000, max_redshift=5.5):
 
     import bagpipes as pipes
 
@@ -23,27 +23,23 @@ def make_model_grid(n_train=100000, max_redshift=5.5):
     dblplaw["tau"] = (0.1, 15.)
 
     nebular = {}
-    nebular["logU"] = (-4., -2.)
+    nebular["logU"] = -3.
 
     dust = {}
-    dust["type"] = "CF00"
-    dust["eta"] = (1., 3.)
-    dust["Av"] = (0., 5.0)
-    dust["n"] = (0.3, 1.5)
-    dust["n_prior"] = "Gaussian"
-    dust["n_prior_mu"] = 0.7
-    dust["n_prior_sigma"] = 0.3
+    dust["type"] = "Calzetti"
+    dust["eta"] = 1.
+    dust["Av"] = (0., 1.)
 
     fit_instructions = {}
     fit_instructions["dblplaw"] = dblplaw
     fit_instructions["nebular"] = nebular
     fit_instructions["dust"] = dust
-    fit_instructions["veldisp"] = (100., 500.)
+    fit_instructions["veldisp"] = (1., 400.)
     fit_instructions["veldisp_prior"] = "log_10"
     fit_instructions["redshift"] = 0.
     fit_instructions["t_bc"] = 0.01
 
-    pc_wavs = np.arange(6400./(1. + max_redshift), 18100., 5.)
+    pc_wavs = np.arange(6400./(1. + max_redshift), 18100., 1)
 
     prior = pipes.fitting.check_priors(fit_instructions, spec_wavs=pc_wavs,
                                        n_draws=n_train)

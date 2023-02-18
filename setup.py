@@ -8,8 +8,8 @@ here = path.abspath(path.dirname(__file__))
 with open(path.join(here, "README.rst"), encoding="utf-8") as f:
     long_description = f.read()
 
-setup(name="bagpipes",
-      version="0.0.1",
+setup(name="moonz",
+      version="0.0.2",
       description="Automatic spectroscopic redshifting for MOONS",
       long_description=long_description,
       url="https://moonz.readthedocs.io",
